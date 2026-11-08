@@ -22,10 +22,18 @@ function cached(key, fn) {
   return cache.get(key);
 }
 
-async function get(url, as = 'text') {
-  const r = await fetch(url, { headers: UA });
-  if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
-  return r[as]();
+// OpenSubtitles met parfois plus de 10 s à répondre : délai long et nouvelles tentatives.
+async function get(url, as = 'text', tries = 3) {
+  for (let k = 1; ; k++) {
+    try {
+      const r = await fetch(url, { headers: UA, signal: AbortSignal.timeout(25000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
+      return await r[as]();
+    } catch (e) {
+      if (k >= tries) throw new Error((e.cause && e.cause.code) || e.message);
+      await new Promise(r => setTimeout(r, 1000 * k));
+    }
+  }
 }
 
 // ---------- sous-titres ----------
@@ -170,8 +178,17 @@ function manifest({ sl, tl }) {
 }
 
 async function subtitles({ cfg, sl, tl }, type, id, extra, base) {
-  const url = OS + '/subtitles/' + type + '/' + id + (extra ? '/' + extra : '') + '.json';
-  const list = (await cached('l:' + url, () => get(url, 'json'))).subtitles || [];
+  // extra (videoHash, filename…) aide OpenSubtitles à choisir des sous-titres de la bonne version ;
+  // ses valeurs doivent être réencodées (espaces, crochets dans le nom du fichier).
+  const enc = extra ? '/' + extra.split('&').map(kv => {
+    const [k, ...v] = kv.split('=');
+    return k + '=' + encodeURIComponent(v.join('='));
+  }).join('&') : '';
+  const listFor = async e => {
+    const url = OS + '/subtitles/' + type + '/' + encodeURIComponent(id).replace(/%3A/g, ':') + e + '.json';
+    return (await cached('l:' + url, () => get(url, 'json'))).subtitles || [];
+  };
+  const list = await listFor(enc).catch(() => listFor(''));
   const tgt = list.filter(s => SR_LANGS[sl].subs.includes(s.lang)).slice(0, MAX_TRACKS);
   const nat = list.find(s => SR_LANGS[tl].subs.includes(s.lang));
   const label = sl.toUpperCase() + '+' + tl.toUpperCase();
