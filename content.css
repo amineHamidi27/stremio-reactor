@@ -14,7 +14,9 @@
   background: rgba(0, 0, 0, .55);
   pointer-events: auto;
 }
-.sr-overlay.sr-with-panel { left: calc((100vw - 360px) / 2); max-width: calc(86vw - 360px); }
+/* sous-titres d'origine de YouTube et Netflix masqués quand l'extension affiche les siens */
+html.sr-on .ytp-caption-window-container,
+html.sr-on .player-timedtext { display: none !important; }
 .sr-overlay.sr-empty { background: transparent; pointer-events: none; }
 .sr-target { color: #fff; font-size: var(--sr-size); font-weight: 600; text-shadow: 0 2px 4px #000; }
 .sr-native { color: #ffd76a; font-size: calc(var(--sr-size) * .72); margin-top: 4px; white-space: pre-line; text-shadow: 0 2px 4px #000; transition: filter .15s; }

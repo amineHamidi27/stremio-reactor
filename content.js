@@ -10,7 +10,7 @@
   let S = Object.assign({}, SR_DEFAULTS);
   const st = {
     video: null,
-    route: null,        // { type, id } du titre en cours
+    key: null,          // identifiant du titre en cours (selon le site)
     tgtTracks: [], natTracks: [],
     tgtIdx: NONE, natIdx: NONE,
     cues: [],           // [{ start, end, text, native }]
@@ -32,6 +32,28 @@
       });
     });
   }
+
+  // Requête au script page.js (monde MAIN, YouTube et Netflix).
+  let reqId = 0;
+  const waiting = new Map();
+  function page(action, data) {
+    return new Promise((resolve, reject) => {
+      const id = ++reqId;
+      waiting.set(id, { resolve, reject });
+      window.postMessage(Object.assign({ sr: 'req', id, action }, data), '*');
+      setTimeout(() => { if (waiting.delete(id)) reject(new Error('la page ne répond pas (recharge-la)')); }, 25000);
+    });
+  }
+  window.addEventListener('message', e => {
+    const m = e.data;
+    if (e.source !== window || !m) return;
+    if (m.sr === 'res' && waiting.has(m.id)) {
+      const w = waiting.get(m.id);
+      waiting.delete(m.id);
+      if (m.ok) w.resolve(m.data); else w.reject(new Error(m.error));
+    }
+    if (m.sr === 'event' && m.type === 'nf-tracks' && m.movieId === st.key) loadMedia(st.key);
+  });
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -64,6 +86,42 @@
       const txt = lines.slice(i + 1).join('\n')
         .replace(/<[^>]+>/g, '').replace(/\{[^}]*\}/g, '').trim();
       if (txt) out.push({ start: toSec(m[1], m[2], m[3], m[4]), end: toSec(m[5], m[6], m[7], m[8]), text: txt });
+    }
+    return out.sort((a, b) => a.start - b.start);
+  }
+
+  // Format json3 de YouTube.
+  function parseJson3(text) {
+    const out = [];
+    for (const e of JSON.parse(text).events || []) {
+      if (!e.segs || e.tStartMs == null) continue;
+      const txt = e.segs.map(s => s.utf8 || '').join('').replace(/[ \t]*\n[ \t]*/g, '\n').trim();
+      if (txt) out.push({ start: e.tStartMs / 1000, end: (e.tStartMs + (e.dDurationMs || 2000)) / 1000, text: txt });
+    }
+    out.sort((a, b) => a.start - b.start);
+    // les sous-titres automatiques se chevauchent : chaque ligne s'arrête quand la suivante commence
+    for (let i = 0; i < out.length - 1; i++) out[i].end = Math.min(out[i].end, out[i + 1].start);
+    return out;
+  }
+
+  // Format TTML / DFXP de Netflix (temps en « ticks » ou en hh:mm:ss.mmm).
+  function parseTTML(text) {
+    const doc = new DOMParser().parseFromString(text, 'text/xml');
+    const root = doc.documentElement;
+    const tick = +(root.getAttribute('ttp:tickRate') ||
+      root.getAttributeNS('http://www.w3.org/ns/ttml#parameter', 'tickRate')) || 10000000;
+    const time = v => {
+      if (!v) return 0;
+      if (v.endsWith('t')) return +v.slice(0, -1) / tick;
+      const m = v.match(/(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      return m ? m[1] * 3600 + m[2] * 60 + +m[3] : parseFloat(v);
+    };
+    const textOf = n => n.nodeType === 3 ? n.nodeValue
+      : n.localName === 'br' ? '\n' : [...n.childNodes].map(textOf).join('');
+    const out = [];
+    for (const p of doc.getElementsByTagNameNS('*', 'p')) {
+      const txt = textOf(p).trim();
+      if (txt) out.push({ start: time(p.getAttribute('begin')), end: time(p.getAttribute('end')), text: txt });
     }
     return out.sort((a, b) => a.start - b.start);
   }
@@ -136,7 +194,93 @@
     return route;
   }
 
-  async function loadRoute(route) {
+  // ---------- sites ----------
+  // Chaque site dit où est la vidéo, quel titre est en cours (key) et quelles pistes existent.
+  // Une piste = { label, load: () => Promise<cues> }.
+  const baseLang = c => (c || '').toLowerCase().split(/[-_]/)[0];
+
+  const SITES = {
+    stremio: {
+      video: () => document.querySelector('video'),
+      key() {
+        const r = parseRoute();
+        return r ? r.type + '/' + r.id : null;
+      },
+      async tracks(key) {
+        const res = await send({ type: 'json', url: ADDON + '/subtitles/' + key + '.json' });
+        const subs = res.subtitles || [];
+        const mk = s => ({
+          label: s.subtitleFileName || s.movieReleaseName || s.id,
+          load: async () => parseSubs(await send({ type: 'text', url: s.url }))
+        });
+        return {
+          target: subs.filter(s => SR_LANGS[S.target].subs.includes(s.lang)).map(mk),
+          native: subs.filter(s => SR_LANGS[S.native].subs.includes(s.lang)).map(mk)
+        };
+      }
+    },
+
+    youtube: {
+      hideOwnSubs: true,
+      video: () => document.querySelector('#movie_player video'),
+      key() {
+        const u = new URL(location.href);
+        if (u.pathname === '/watch') return u.searchParams.get('v');
+        const m = u.pathname.match(/^\/shorts\/([\w-]+)/);
+        return m ? m[1] : null;
+      },
+      async tracks(videoId) {
+        const info = await page('yt-tracks', { videoId });
+        if (!info.tracks.length) return { target: [], native: [], note: 'Cette vidéo n\'a pas de sous-titres.' };
+        const load = (lang, kind, tlang) => async () => parseJson3(await page('yt-fetch', { videoId, lang, kind, tlang }));
+        // pistes d'une langue, sous-titres manuels avant les automatiques
+        const of = code => info.tracks.filter(t => baseLang(t.lang) === code)
+          .sort((a, b) => (a.kind === 'asr') - (b.kind === 'asr'));
+        const src = of(S.target)[0] || info.tracks.find(t => t.kind !== 'asr') || info.tracks[0];
+        const target = of(S.target).map(t => ({ label: t.name, load: load(t.lang, t.kind) }));
+        if (!target.length) {
+          target.push({ label: src.name + ' → ' + SR_LANGS[S.target].name + ' (YouTube)', load: load(src.lang, src.kind, S.target) });
+        }
+        // La traduction de YouTube garde exactement le même minutage : choix par défaut.
+        const native = [{ label: 'Traduction YouTube', load: load(src.lang, src.kind, S.native) }]
+          .concat(of(S.native).map(t => ({ label: t.name, load: load(t.lang, t.kind) })));
+        return { target, native };
+      }
+    },
+
+    netflix: {
+      hideOwnSubs: true,
+      video: () => document.querySelector('video'),
+      key() {
+        const m = location.pathname.match(/^\/watch\/(\d+)/);
+        return m ? m[1] : null;
+      },
+      async tracks(movieId) {
+        const list = await page('nf-tracks', { movieId });
+        if (!list) {
+          return { target: [], native: [], note: 'Sous-titres Netflix pas encore reçus. Si rien n\'apparaît, recharge la page (F5).' };
+        }
+        const mk = t => ({
+          label: t.label,
+          load: async () => {
+            const text = await page('nf-fetch', { url: t.url });
+            return t.format === 'vtt' ? parseSubs(text) : parseTTML(text);
+          }
+        });
+        return {
+          target: list.filter(t => baseLang(t.lang) === S.target).map(mk),
+          native: list.filter(t => baseLang(t.lang) === S.native).map(mk)
+        };
+      },
+      // Netflix plante si on modifie video.currentTime : on passe par son lecteur.
+      seek: t => page('nf-seek', { time: t })
+    }
+  };
+
+  const site = /(^|\.)youtube\.com$/.test(location.hostname) ? SITES.youtube
+    : /(^|\.)netflix\.com$/.test(location.hostname) ? SITES.netflix : SITES.stremio;
+
+  async function loadMedia(key) {
     const token = ++st.loadToken;
     st.tgtTracks = []; st.natTracks = [];
     st.tgtIdx = NONE; st.natIdx = NONE;
@@ -144,17 +288,17 @@
     st.offset = 0;
     status('Recherche des sous-titres…');
     try {
-      const res = await send({ type: 'json', url: ADDON + '/subtitles/' + route.type + '/' + route.id + '.json' });
+      const t = await site.tracks(key);
       if (token !== st.loadToken) return;
-      const subs = res.subtitles || [];
-      st.tgtTracks = subs.filter(s => SR_LANGS[S.target].subs.includes(s.lang));
-      st.natTracks = subs.filter(s => SR_LANGS[S.native].subs.includes(s.lang));
+      st.tgtTracks = t.target;
+      st.natTracks = t.native;
       fillSelects();
       if (!st.tgtTracks.length) {
-        status('Aucun sous-titre ' + SR_LANGS[S.target].name + ' trouvé. Charge un fichier .srt (touche T).');
+        status(t.note || 'Aucun sous-titre ' + SR_LANGS[S.target].name + ' trouvé. Charge un fichier .srt (touche T).');
         return;
       }
       await selectTarget(0);
+      if (token !== st.loadToken) return;
       await selectNative(st.natTracks.length ? 0 : MT);
     } catch (e) {
       if (token === st.loadToken) status('Erreur : ' + e.message);
@@ -164,8 +308,7 @@
   async function selectTarget(i) {
     st.tgtIdx = i;
     status('Chargement des sous-titres ' + SR_LANGS[S.target].name + '…');
-    const text = await send({ type: 'text', url: st.tgtTracks[i].url });
-    setCues(parseSubs(text));
+    setCues(await st.tgtTracks[i].load());
     if (st.natIdx >= 0) await selectNative(st.natIdx);
     status(st.cues.length + ' répliques chargées.');
   }
@@ -174,10 +317,7 @@
     st.natIdx = i;
     st.mt.clear();
     for (const c of st.cues) c.native = undefined;
-    if (i >= 0) {
-      const text = await send({ type: 'text', url: st.natTracks[i].url });
-      align(parseSubs(text));
-    }
+    if (i >= 0) align(await st.natTracks[i].load());
     fillSelects();
     render(true);
   }
@@ -187,6 +327,7 @@
     st.cur = -1;
     st.pausedAtCue = -1;
     st.mt.clear();
+    document.documentElement.classList.toggle('sr-on', !!site.hideOwnSubs && cues.length > 0);
     buildTranscript();
     render(true);
   }
@@ -244,22 +385,26 @@
 
   const panel = el('div', 'sr-panel');
   panel.hidden = true;
-  panel.innerHTML = `
-    <div class="sr-head"><b>Stremio Reactor</b><button class="sr-x" title="Fermer (T)">✕</button></div>
-    <label>Sous-titres appris <select class="sr-sel-tgt"></select></label>
-    <label>Sous-titres traduits <select class="sr-sel-nat"></select></label>
-    <div class="sr-row">Décalage
-      <button class="sr-off-m">−</button><span class="sr-off">0.0 s</span><button class="sr-off-p">+</button>
-    </div>
-    <div class="sr-row">
-      <label><input type="checkbox" class="sr-ck-ap"> Pause auto</label>
-      <label><input type="checkbox" class="sr-ck-hp"> Pause au survol</label>
-      <label><input type="checkbox" class="sr-ck-nat"> Traduction</label>
-      <label><input type="checkbox" class="sr-ck-blur"> Flouter</label>
-    </div>
-    <div class="sr-status"></div>
-    <div class="sr-keys">A ◀ réplique · S répéter · D ▶ réplique · Q pause auto · N traduction · [ ] décalage · T panneau</div>
-    <div class="sr-list"></div>`;
+  // Construit sans innerHTML : YouTube l'interdit (Trusted Types).
+  {
+    const labeled = (text, child) => { const l = el('label', null, text + ' '); l.append(child); return l; };
+    const check = (cls, text) => { const c = el('input', cls); c.type = 'checkbox'; const l = el('label'); l.append(c, ' ' + text); return l; };
+    const head = el('div', 'sr-head');
+    const close = el('button', 'sr-x', '✕');
+    close.title = 'Fermer (T)';
+    head.append(el('b', null, 'Stremio Reactor'), close);
+    const offset = el('div', 'sr-row', 'Décalage ');
+    offset.append(el('button', 'sr-off-m', '−'), el('span', 'sr-off', '0.0 s'), el('button', 'sr-off-p', '+'));
+    const checks = el('div', 'sr-row');
+    checks.append(check('sr-ck-ap', 'Pause auto'), check('sr-ck-hp', 'Pause au survol'),
+      check('sr-ck-nat', 'Traduction'), check('sr-ck-blur', 'Flouter'));
+    panel.append(head,
+      labeled('Sous-titres appris', el('select', 'sr-sel-tgt')),
+      labeled('Sous-titres traduits', el('select', 'sr-sel-nat')),
+      offset, checks, el('div', 'sr-status'),
+      el('div', 'sr-keys', 'A ◀ réplique · S répéter · D ▶ réplique · Q pause auto · N traduction · [ ] décalage · T panneau'),
+      el('div', 'sr-list'));
+  }
   const $ = s => panel.querySelector(s);
   const list = $('.sr-list');
   const selTgt = $('.sr-sel-tgt');
@@ -268,7 +413,7 @@
   function status(msg) { $('.sr-status').textContent = msg; }
 
   function fillSelects() {
-    const label = (t, i) => '#' + (i + 1) + ' ' + (t.subtitleFileName || t.movieReleaseName || t.id);
+    const label = (t, i) => '#' + (i + 1) + ' ' + t.label;
     selTgt.replaceChildren();
     st.tgtTracks.forEach((t, i) => selTgt.add(new Option(label(t, i), i)));
     selTgt.add(new Option('Fichier local…', 'file'));
@@ -372,7 +517,7 @@
     st.hoverPaused = false;
     const word = span.textContent;
     const cue = st.cues[st.cur];
-    pop.innerHTML = '';
+    pop.replaceChildren();
     const head = el('div', 'sr-pop-head');
     head.append(el('b', null, word));
     const say = el('button', null, '🔊');
@@ -412,7 +557,8 @@
           sentenceNative: cue && st.cur >= 0 ? nativeText(st.cur).replace(/\n/g, ' ') : '',
           lang: S.target,
           title: document.title,
-          media: st.route ? st.route.id : '',
+          media: st.key || '',
+          site: location.hostname,
           time: st.video ? Math.floor(st.video.currentTime) : 0,
           savedAt: Date.now()
         });
@@ -449,8 +595,9 @@
     if (!v || i < 0 || i >= st.cues.length) return;
     hidePop();
     st.pausedAtCue = -1;
-    v.currentTime = st.cues[i].start + st.offset + 0.01;
-    v.play();
+    const t = st.cues[i].start + st.offset + 0.01;
+    if (site.seek) site.seek(t).then(() => v.play(), e => status('Erreur : ' + e.message));
+    else { v.currentTime = t; v.play(); }
   }
 
   function curTime() { return st.video.currentTime - st.offset; }
@@ -461,7 +608,6 @@
 
   function togglePanel() {
     panel.hidden = !panel.hidden;
-    overlay.classList.toggle('sr-with-panel', !panel.hidden);
     if (!panel.hidden) render();
   }
 
@@ -491,6 +637,7 @@
     requestAnimationFrame(tick);
     const v = st.video;
     if (!v || !st.cues.length) return;
+    place(v);
     const t = curTime();
     if (S.autoPause && !v.paused && st.cur >= 0 && st.pausedAtCue !== st.cur &&
         t >= st.cues[st.cur].end - 0.08) {
@@ -501,6 +648,20 @@
     if (v.paused && st.cur >= 0) return; // garder la réplique affichée en pause
     const i = findCue(t);
     if (i !== st.cur) { st.cur = i; render(); }
+  }
+
+  // Les sous-titres suivent le rectangle de la vidéo (YouTube : la vidéo ne remplit pas l'écran),
+  // sans passer sous le panneau quand il est ouvert.
+  let lastRect = '';
+  function place(v) {
+    const r = v.getBoundingClientRect();
+    const right = panel.hidden ? r.right : Math.min(r.right, innerWidth - 360);
+    const key = r.left + ',' + right + ',' + r.bottom + ',' + r.height;
+    if (key === lastRect) return;
+    lastRect = key;
+    overlay.style.left = (r.left + right) / 2 + 'px';
+    overlay.style.bottom = Math.max(0, innerHeight - r.bottom + r.height * 0.09) + 'px';
+    overlay.style.maxWidth = Math.max(200, (right - r.left) * 0.9) + 'px';
   }
 
   function host() {
@@ -520,17 +681,17 @@
   }
 
   function scan() {
-    const v = document.querySelector('video');
+    const key = site.key();
+    const v = key ? site.video() : null;
     if (v !== st.video) {
       if (st.video) st.video.removeEventListener('seeked', onSeeked);
       st.video = v;
       if (v) { v.addEventListener('seeked', onSeeked); mount(); }
       else { overlay.remove(); pop.remove(); panel.remove(); }
     }
-    const route = parseRoute();
-    if (route && (!st.route || route.id !== st.route.id)) {
-      st.route = route;
-      loadRoute(route);
+    if (key && key !== st.key) {
+      st.key = key;
+      loadMedia(key);
     }
   }
 
@@ -547,7 +708,7 @@
     if (area === 'sync') {
       for (const k in ch) S[k] = ch[k].newValue;
       applySettings();
-      if ((ch.target || ch.native) && st.route) loadRoute(st.route);
+      if ((ch.target || ch.native) && st.key) loadMedia(st.key);
     }
   });
   document.addEventListener('fullscreenchange', () => { if (st.video) mount(); });

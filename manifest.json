@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Stremio Reactor",
-  "version": "0.1.0",
-  "description": "Double sous-titres, mots cliquables et pause automatique pour apprendre les langues sur Stremio Web.",
+  "version": "0.2.0",
+  "description": "Double sous-titres, mots cliquables et pause automatique pour apprendre les langues sur Stremio Web, YouTube et Netflix.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://opensubtitles-v3.strem.io/*",
@@ -13,7 +13,18 @@
   "background": { "service_worker": "background.js" },
   "content_scripts": [
     {
-      "matches": ["https://web.stremio.com/*", "https://app.strem.io/*"],
+      "matches": ["https://www.youtube.com/*", "https://www.netflix.com/*"],
+      "js": ["page.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://web.stremio.com/*",
+        "https://app.strem.io/*",
+        "https://www.youtube.com/*",
+        "https://www.netflix.com/*"
+      ],
       "js": ["lib/langs.js", "content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"

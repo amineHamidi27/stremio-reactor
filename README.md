@@ -1,12 +1,12 @@
 # Stremio Reactor
 
-Apprendre une langue en regardant des films et séries sur **Stremio**, façon Language Reactor : sous-titres doubles, mots cliquables, pause automatique.
+Apprendre une langue en regardant **Stremio**, **YouTube** et **Netflix**, façon Language Reactor : sous-titres doubles, mots cliquables, pause automatique.
 
 Deux parties :
 
 | | Où | Fonctions |
 |---|---|---|
-| **Extension Chrome** | Stremio Web (`web.stremio.com`) | double sous-titres, mots cliquables, pause auto, transcript, mots sauvegardés |
+| **Extension Chrome** | Stremio Web, YouTube, Netflix | double sous-titres, mots cliquables, pause auto, transcript, mots sauvegardés |
 | **Addon Stremio** | application Stremio (PC, et tout appareil si hébergé) | double sous-titres fusionnés en une piste |
 
 Langues : anglais, français, espagnol, allemand, italien, portugais, arabe, russe, turc, néerlandais, polonais, japonais, coréen, chinois.
@@ -36,6 +36,17 @@ Langues : anglais, français, espagnol, allemand, italien, portugais, arabe, rus
 4. Dans le lecteur Stremio, **désactive les sous-titres intégrés** pour ne pas avoir deux fois le texte.
 
 Pour lire les torrents et les fichiers MKV dans le navigateur, Stremio Web a besoin de **Stremio Service** (ou de l'application ouverte) sur ton PC.
+
+### D'où viennent les sous-titres
+
+| Site | Langue apprise | Traduction |
+|---|---|---|
+| Stremio Web | OpenSubtitles | OpenSubtitles (recalé automatiquement) ou traduction auto |
+| YouTube | pistes de la vidéo (manuelles, sinon automatiques) ; sinon traduction YouTube | **traduction YouTube** (même minutage), pistes de la vidéo ou traduction auto |
+| Netflix | pistes Netflix | pistes Netflix ou traduction auto |
+
+- **YouTube** : l'extension fait charger chaque piste par le lecteur YouTube (les adresses de sous-titres sont à usage unique) ; les sous-titres YouTube d'origine sont masqués.
+- **Netflix** : l'extension lit la liste des sous-titres quand la vidéo démarre. Si elle a été installée ou rechargée pendant la lecture, **recharge la page (F5)**. Le saut de réplique passe par le lecteur Netflix (modifier directement la vidéo provoque l'erreur M7375).
 
 ### Raccourcis (dans le lecteur)
 
@@ -84,5 +95,7 @@ python3 dev/server.py
 ```
 
 Puis ouvre <http://127.0.0.1:8765/dev/test.html>.
+
+Le code propre à chaque site est dans `content.js` (objet `SITES`) et `page.js` (script injecté dans la page de YouTube et Netflix, pour accéder à leur lecteur).
 
 Les captures du dossier `docs/` se régénèrent avec `node dev/screenshots.mjs` (Chrome, page de test et addon lancés, vidéo `dev/demo.mp4`).
