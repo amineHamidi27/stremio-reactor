@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Stremio Reactor",
+  "version": "0.1.0",
+  "description": "Double sous-titres, mots cliquables et pause automatique pour apprendre les langues sur Stremio Web.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://opensubtitles-v3.strem.io/*",
+    "https://*.strem.io/*",
+    "https://clients5.google.com/*",
+    "https://api.mymemory.translated.net/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://web.stremio.com/*", "https://app.strem.io/*"],
+      "js": ["lib/langs.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_title": "Stremio Reactor", "default_popup": "popup.html" }
+}

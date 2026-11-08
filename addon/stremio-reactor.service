@@ -1,0 +1,10 @@
+[Unit]
+Description=Stremio Reactor (addon de sous-titres doubles)
+After=network-online.target
+
+[Service]
+ExecStart=/home/amine/.nvm/versions/node/v24.11.0/bin/node /home/amine/Desktop/stremio-reactor/addon/server.js
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
