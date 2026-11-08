@@ -17,7 +17,7 @@ Langues : anglais, français, espagnol, allemand, italien, portugais, arabe, rus
 
 ![Bulle de traduction d'un mot](docs/extension-mot.png)
 
-**Extension** : panneau avec choix des pistes, réglages et transcript cliquable (touche T).
+**Extension** : panneau avec choix des pistes, réglages et transcript cliquable avec traductions (touche T).
 
 ![Panneau transcript](docs/extension-panneau.png)
 
@@ -54,6 +54,8 @@ Pour lire les torrents et les fichiers MKV dans le navigateur, Stremio Web a bes
 |---|---|
 | A / D | réplique précédente / suivante |
 | S | répéter la réplique |
+| R | répéter la réplique en boucle (R à nouveau pour arrêter) |
+| W | vitesse : ×1 → ×0,85 → ×0,7 |
 | Q | activer ou désactiver la pause auto |
 | N | afficher ou masquer la traduction |
 | [ / ] | décaler les sous-titres de −/+ 0,25 s |

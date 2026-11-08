@@ -20,8 +20,11 @@
     hoverPaused: false,
     mt: new Map(),      // index de réplique -> traduction auto
     saved: new Set(),   // mots sauvegardés (minuscules)
-    loadToken: 0
+    loadToken: 0,
+    loopCue: -1,        // réplique répétée en boucle (touche R), -1 = pas de boucle
+    lastLoopSeek: 0
   };
+  const SPEEDS = [1, 0.85, 0.7]; // touche W
 
   // ---------- utilitaires ----------
   function send(msg) {
@@ -318,6 +321,7 @@
     st.mt.clear();
     for (const c of st.cues) c.native = undefined;
     if (i >= 0) align(await st.natTracks[i].load());
+    buildTranscript();
     fillSelects();
     render(true);
   }
@@ -402,7 +406,7 @@
       labeled('Sous-titres appris', el('select', 'sr-sel-tgt')),
       labeled('Sous-titres traduits', el('select', 'sr-sel-nat')),
       offset, checks, el('div', 'sr-status'),
-      el('div', 'sr-keys', 'A ◀ réplique · S répéter · D ▶ réplique · Q pause auto · N traduction · [ ] décalage · T panneau'),
+      el('div', 'sr-keys', 'A ◀ réplique · S répéter · D ▶ réplique · R boucle · W vitesse · Q pause auto · N traduction · [ ] décalage · T panneau'),
       el('div', 'sr-list'));
   }
   const $ = s => panel.querySelector(s);
@@ -454,7 +458,12 @@
     $('.sr-ck-hp').checked = S.hoverPause;
     $('.sr-ck-nat').checked = S.showNative;
     $('.sr-ck-blur').checked = S.blurNative;
-    badge.textContent = S.autoPause ? 'pause auto' : '';
+    const rate = st.video ? st.video.playbackRate : 1;
+    badge.textContent = [
+      S.autoPause && 'pause auto',
+      st.loopCue >= 0 && 'boucle',
+      rate !== 1 && '×' + rate
+    ].filter(Boolean).join(' · ');
   }
 
   function shiftOffset(d) {
@@ -474,7 +483,9 @@
     list.replaceChildren();
     st.cues.forEach((c, i) => {
       const row = el('div', 'sr-line');
-      row.append(el('span', 'sr-time', fmtTime(c.start)), el('span', null, c.text.replace(/\n/g, ' ')));
+      const body = el('span', null, c.text.replace(/\n/g, ' '));
+      if (c.native) body.append(el('small', 'sr-line-nat', c.native.replace(/\n/g, ' ')));
+      row.append(el('span', 'sr-time', fmtTime(c.start)), body);
       row.onclick = () => seekCue(i);
       list.append(row);
     });
@@ -606,6 +617,12 @@
   function nextCue() { seekCue(lastStarted(curTime()) + 1); }
   function replayCue() { seekCue(st.cur >= 0 ? st.cur : lastStarted(curTime())); }
 
+  function toggleLoop() {
+    if (st.loopCue >= 0) st.loopCue = -1;
+    else st.loopCue = st.cur >= 0 ? st.cur : lastStarted(curTime());
+    flash(st.loopCue >= 0 ? 'Boucle sur la réplique' : 'Boucle désactivée');
+  }
+
   function togglePanel() {
     panel.hidden = !panel.hidden;
     if (!panel.hidden) render();
@@ -620,6 +637,12 @@
       q: () => { setSetting('autoPause', !S.autoPause); flash(S.autoPause ? 'Pause auto activée' : 'Pause auto désactivée'); },
       n: () => setSetting('showNative', !S.showNative),
       t: togglePanel,
+      r: toggleLoop,
+      w: () => {
+        const v = st.video;
+        v.playbackRate = SPEEDS[(SPEEDS.indexOf(v.playbackRate) + 1) % SPEEDS.length];
+        flash('Vitesse ×' + v.playbackRate);
+      },
       '[': () => shiftOffset(-0.25),
       ']': () => shiftOffset(0.25),
       Escape: hidePop
@@ -639,6 +662,15 @@
     if (!v || !st.cues.length) return;
     place(v);
     const t = curTime();
+    // boucle : revenir au début de la réplique dès qu'elle se termine (ou si on en sort)
+    if (st.loopCue >= 0 && !v.paused && Date.now() - st.lastLoopSeek > 600) {
+      const c = st.cues[st.loopCue];
+      if (c && (t >= c.end || t < c.start - 1)) {
+        st.lastLoopSeek = Date.now();
+        seekCue(st.loopCue);
+        return;
+      }
+    }
     if (S.autoPause && !v.paused && st.cur >= 0 && st.pausedAtCue !== st.cur &&
         t >= st.cues[st.cur].end - 0.08) {
       st.pausedAtCue = st.cur;
